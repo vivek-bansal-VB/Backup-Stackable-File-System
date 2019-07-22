@@ -1,0 +1,74 @@
+											README file
+
+Design Explanation:
+
+1. When to backup?
+	- Whenever write to a file happens, I am creating the backup at that time. Before write happens to the file in bkpfs_write(), I am calling my bkpfs_create_backupfile() which takes dentry of the original file as the argument and creates the backup file. Also, I am writing minimum and maximum backup versions of the file in its extended attributes. So, when creating a new backup file, there are 2 cases possible.
+		a) Extended attribute is not yet created: In this case, I am creating 2 new extended attributes (MIN_VERSION and MAX_VERSION set to 1) and writes it to file metadata.
+		b) Extended attribute is already created: In this case, I am getting MAX_VERRSION attribute value and incrementing it and writing the updated attribute value to the file metadata.
+
+2. What to backup?
+	- I am doing the backup of the original file before updating it.
+	- I am using vfs_copy_file_range() func to copy the contents of the original file to the backup version. Also, I am using dentry_open to get the FILE* so that I can use vfs_copy_file_range.
+  
+3. Where to store backups?
+	- for this assignment, I have created the mount point as :
+		mount -t bkpfs test/some/lower/path test/mnt/bkpfs
+	  So my backup files as well as the original file should be present in /test/mnt/bkpfs. I did my testing considering that my original file will be present in this location.
+
+4. How to backup
+	- As explained earlier, I have used vfs_copy_file_range() to copy the contents of the original file to the new file. I have created a new backup file by appending the version and .tmp extension to it. For example: I have created a new file: a.txt in test/mnt/bkpfs directory. If any write happenss to this file, I am creating a new backup file from the name of a.txt1.tmp (where 1 denotes the backup version).
+
+5. Visibility policy
+	- To hide the backup files from the user in /test/mnt/bkpfs directory, I have made changes in bkpfs_readdir() and bkpfs_filldir(). Whenever the function bkpfs_filldir() is called, I am checking the extension of the file. If the extension is ".tmp", then I am hiding the file. So here I am making the assumption no ".tmp" files are created by the user manually. For this assignment I am assuming my backup files to be of ".tmp" extension.
+
+6. Retention policy
+	- To implement retention policy, I used some checks when creating a new backup file. At the time of creating a new backup, I read the extended attributes(MIN_VERSION and MAX_VERSION) from the file metadata. If the difference between them is equal to 10 (I have hardcoded maximum 10 backups for a file in this assignment), that means I need to remove a backup to create a new backup. So I removed the oldest backup of the file using vfs_unlink() and incremented/updated the min_version of the backup file into the file metadata.
+
+7. Version management
+
+(7a) List all versions of a file.
+	- To implement list versions functionality, I have created an ioctl() call. I called ioctl() from the user space to get the minimum and maximum backup versions available of the file. After getting the minimum and maximum versions in the user space, I have added the file name before these version in the loop and print them on the console.
+
+(7b) Delete newest, oldest, or all versions
+	- To implement delete versions functionality, I have created the delete ioctl(). I am sending the arg("newest", "oldest", "all") from the user space to the kernel space. The Kernel will use vfs_unlink() to delete the required backup file. If the arg is "oldest", I am getting the min_version from the extended attribute and delete that file. If the arg is "newest", I am deleting the backup file of the maximum version. If arg is "all", I am deleting all available backup files from min_version to max_version. 
+
+(7c) View file version V, newest, or oldest
+	- To implement view version functionality, first I checked whether the version which user wants to see is valid or not. If version not valid which I checked in the Kernel, it will throw an error in the kernel which can be checked using "dmesg" and will return without displaying anything on the console. If the version is valid, I am allocating user space of size 4K in userland and also initiliasing the file offset to 0, and calling view ioctl() to get the contents of the file starting from given offset and maximum 4K characters. I am doing this reading of the buffer in a loop until the complete file content is printed on the console. To copy contents from kernel space to user space, I am ussing copy_to_user() function. Also, since I am only displaying the contents of the file on the console, it can be considered as the read-only mechanism since the user will not be able to modify the file.
+ 
+(7d) Restore newest version, oldest, or any version V
+	- To implement restore functionality, I have overwrite the original file. The overwrite file can be seen in the lower FS (/test/some/lower/path/) and not in the upper file system (/test/mnt/bkpfs). I have used vfs_copy_file_range() to copy the contents from the restore file to the original file.
+
+
+User Program and Testing:
+
+The user program is present in /hw2-vbansal/CSE-506/bkpctl.c file. It contains various checks to handle various error scenarios. Invalid command line arguments are handled properly in the user code. Thereis a common struct file /hw2-vbansal/CSE-506/struct.h present which is shared by the user and kernel program. It contains the definition of the struct and ioctl() declarations as well.
+For Testing I have created many test scripts in the folder /hw2-vbansal/CSE-506/Test/ which are invoked by the main test script of name "main.sh" present in the same directory. The shell scripts are checking various workflows in our code and their functionality is mentioned in each of them. Also, there is a makefile present in the CSE-506 directory which also builds /fs/bkpfs directory.
+
+
+Kernel Code:
+The kernel code for the backup functionality is present in /hw2-vbansal/fs/bkpfs and I implemented all functionalities mainly in the file "file.c". This file contains the code for the backup files creation, deletion, view, restore, listing of them. It contains the code for the visibility and retention policy as well. All ioctl() calls are implemented in this file.
+
+
+Build steps:
+I have added a utility script in folder /hw2-vbansal/fs/bkpfs/test.sh to run commands doing mounting/unmounting.
+1. First cd to directory /hw2-vbansal/fs/bkpfs/
+2. Run command "umount ../../../../../test/mnt/bkpfs"
+3. Run 2 times sh ./test.sh
+4. Then cd to directory /hw2-vbansal/CSE-506.
+5. Run command "make"
+6. After doing make in the above directory an executable of name "bkpctl" is created in that directory.
+7. To create a new file, go to ../../../../test/mnt/bkpfs and run:	
+	echo hello1>>a.txt
+	echo hello2>>a.txt
+	echo hello3>>a.txt
+   The above commands will create 3 backup files (a.txt1.tmp, a.txt2.tmp, a.txt3.tmp). These backup files are not visible in the upper FS (/test/mnt/bkpfs) but they are visible in lower FS (/test/some/lower/path).
+8. Then cd to directory /hw2-vbansal/CSE-506 and run:
+	./bkpctl -l ../../../../test/mnt/bkpfs/a.txt (it will list out all the versions of the backup files of a.txt)
+	./bkpctl -d "oldest" ../../../../test/mnt/bkpfs/a.txt (it will delete the oldest backup version which is version 1 of file a.txt)
+	./bkpctl -v "2" ../../../../test/mnt/bkpfs/a.txt (it will display the contents of a.txt2.tmp which is the second backup version of the file on the console)
+	./bkpctl -r "2" ../../../../test/mnt/bkpfs/a.txt (it will copy the contents of file a.txt2.tmp in the file a.txt. Here the changes are only visible in the lower FS: /test/some/lower/path/a.txt and to made changes to the upper FS as well, we need to do interpose to create 2 dentries which I had not implemented).
+
+
+
+---------------------------------------------------------------------------------README END-----------------------------------------------------------------------------------------------------------------
